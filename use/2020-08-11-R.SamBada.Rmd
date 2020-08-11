@@ -1,0 +1,342 @@
+---
+title: "R.SamBada processing chain"
+---
+
+# Research Question
+
+This vignette will illustrate the use of R.SamBada to detect potential signature of selection using a correlative approach between genotype and environmental conditions.
+
+# Introduction
+
+This package is designed to entail the whole processing chain to use SamBada, from pre- to post-processing. SamBada is a software written in C++ design to run logistic regression between genotypes and environmental variables. Population structure can be taken into account by computing multivariate logistic regression in which one or more variables are population variable(s).
+
+In this vignette, we will work through all these steps with an example given in the data available with the package. 
+
+If you want more documentation, you can read the [documentation of the package](https://CRAN.R-project.org/package=R.SamBada/R.SamBada.pdf) or [SamBada's documentation](https://github.com/Sylvie/sambada/releases/download/v0.8.0/sambadoc.pdf). 
+
+# Resources
+
+## Data
+
+Data used in this vignette is available in the R.SamBada package. It is a subset of ten SNPs from 800 Ougandan cattle including the sample location (see SamBada's documentation above for more information).
+
+## Prerequisite
+
+### For Mac users: 
+SamBada can only be used with GCC7 compiler, which is not the default one on MacOS. You can install it from the terminal by first downloading homebrew and then installing gcc7. For the function createEnv, you also need GDAL to be installed. This can also be done with Homebrew
+
+```{bash, eval=FALSE}
+# install Homebrew (https://brew.sh/). At the moment of writing the command to install it is
+/usr/bin/ruby -e "$(curl -fsSL \https://raw.githubusercontent.com/Homebrew/install/master/install)"
+# install GCC7
+brew install gcc@7
+# install GDAL
+brew install gdal
+```
+
+
+### Windows
+For the function createEnv, GDAL must be be installed. This can be done by using the osgeo4w installer. At the time of writing, this can be accessed under https://trac.osgeo.org/osgeo4w/. Download the 64-bit (or 32-bit) installer, check the 'Express Desktop Install',  choose one of the proposed URL and uncheck all packages, but the GDAL package (alternatively you can use https://anaconda.org/conda-forge/gdal/files)
+
+### Linux
+For the function createEnv, GDAL must be be installed. At the moment of writing this can be done with the following command in the terminal
+```{bash, eval=FALSE}
+sudo apt install libgdal-dev
+sudo apt install libproj-dev
+```
+
+## Packages
+
+To run this vignette, you will need to install R.SamBada. It is recommended to install all dependencies, including the "suggested packages" (i.e. packages that are used in only one or a few functions and that are therefore not mandatory to install the package). Note that one of the dependency (the SNPRelate package) should be installed with the BiocManager separately.
+
+```{r, packages, eval=FALSE}
+install.packages("BiocManager")
+BiocManager::install(pkgs=c("SNPRelate","biomaRt")) #if asked, please update packages that needs to be updated
+install.packages("R.SamBada", dependencies=c("Depends",
+      "Imports", "LinkingTo", "Suggests"))
+library("R.SamBada")
+```
+
+
+
+# Analysis 
+
+## Section 1: Load the data
+
+The dataset is included within the R.SamBada package. Here we will define the path of all needed files for the rest of the analysis, as well as copy some files to the current directory. Some of the files listed below are also created by R.SamBada functions (illlustrated in this vignette). However to make sure that you can work through the whole vignette even if you want to skip a step, all files used as input to functions in this vignette refer to the ones included in the package.
+
+```{r load_data_show, eval=FALSE}
+### Define path to necessary files
+#Genomic input file in plink ped format
+genoFile=system.file("extdata", "uganda-subset-mol.ped", package = "R.SamBada")
+genoFile #Check the path to the file
+
+#File containing locations of samples
+locationFile=system.file("extdata", "uganda-subset.csv", package = "R.SamBada")
+readLines(locationFile, n=20) #View the first 20 lines of the input file
+
+#GDS file (format from SNPRelate package). The file is different for windows or unix user (created with prepareGeno)
+if(Sys.info()['sysname']=='Windows'){
+  gdsFile=system.file("extdata", "uganda-subset-mol_windows.gds", package = "R.SamBada") #If you run Windows
+}else{
+  gdsFile=system.file("extdata", "uganda-subset-mol_unix.gds", package = "R.SamBada") #If you run MacOS or Linux
+}
+gdsFile #Check the path to the file
+
+#File containing environmental variable (generated from createEnv)
+envFile=system.file("extdata", "uganda-subset-env.csv", package = "R.SamBada")
+readLines(envFile, n=20) #View the first 20 lines of the file
+
+#File containing pruned environmental variables with population information (created with preapreEnv)
+envFile2=system.file("extdata", "uganda-subset-env-export.csv", package = "R.SamBada")
+readLines(envFile2, n=20) #View the first 20 line of the environmental file
+
+#Genetic file in csv format (created with prepareGeno)
+genoFile2=system.file("extdata", "uganda-subset-mol.csv", package = "R.SamBada")
+readLines(genoFile2, n=20) #View the first 20 line of the genetic file
+
+### Copy files to working directory 
+#Copy uganda-subset-id to test setLocation()
+file.copy(system.file("extdata", "uganda-subset-id.csv", package = "R.SamBada"), 'uganda-subset-id.csv')
+#You first need to copy the output file of sambadaParallel and prepareGeno into the active directory with the following command
+file.copy(system.file("extdata", "uganda-subset-mol-Out-2.csv", package = "R.SamBada"), 'uganda-subset-mol-Out-2.csv')
+file.copy(system.file("extdata", "uganda-subset-mol-storey.csv", package = "R.SamBada"), 'uganda-subset-mol-storey.csv')
+
+#Copy GDS file (created withprepareGeno)
+if(Sys.info()['sysname']=='Windows'){
+  file.copy(system.file("extdata", "uganda-subset-mol_windows.gds", package = "R.SamBada"),'uganda-subset-mol.gds') #If you run Windows
+} else {
+  file.copy(system.file("extdata", "uganda-subset-mol_unix.gds", package = "R.SamBada"),'uganda-subset-mol.gds') #If you run MacOS or Linux
+}
+
+```
+
+## Section 2: Install sambada
+
+For running sambada, you need to download sambada's binaries. This can be done with `downloadSambada` which downloads Sambada from GitHub and unpacks it into the directory of your choice. You might already be a Sambada user and do not have to download it again! Note that if you plan to often use Sambada, it is recommended that you put the binaries folder of Sambada into your path environmental variable (this procedure is OS-dependent, look on the internet how to proceed), otherwise you will have to specify this path every time you start a new R session.
+
+Carefull: FOR MACOS USERS: MacOS users must install GCC7 in order to be able to run sambada. See [SamBada's documentation](https://github.com/Sylvie/sambada/releases/download/v0.8.0/sambadoc.pdf) page 2.
+
+
+```{r, eval=FALSE}
+#Load help 
+?downloadSambada()
+#Downloads Sambada into current directory (you can define the directory input if you want)
+downloadSambada() 
+```
+  
+## Section 3: Preprocessing  
+
+### Prepare the genomic file
+
+The first step when you have your genomic matrix is to prepare it into a format that samBada accepts. You can use `prepareGeno` for this, which can process plink ped, plink bed, vcf or gds input file. In the meantime, you can also filter out SNPs based on Minor Allele Frequency (MAF), Missingness, Linkage Disequilibrium (LD) and Major Genotype Frequency (MGF). In order to work with your dataset, a GDS file (from SNPRelate package) is first created. If saveGDS is set to TRUE, then the file will be saved in the active directory. The GDS file is used in other functions, so we recommend that you keep it.
+
+```{r, eval=FALSE}
+#Load help
+#================
+?prepareGeno
+
+#Run prepareGeno
+#================
+#Make sure you ran downloadSambada() before running this command.
+prepareGeno(fileName=genoFile,outputFile='uganda-subset-mol.csv',saveGDS=TRUE,mafThresh=0.05, missingnessThresh=0.1,interactiveChecks=FALSE) #Also try with interactiveChecks=TRUE
+```
+
+### Assign sample location
+
+If coordinates are unknown, you can use `setLocation` to help you defining sample coordinates. The procedure is self-explained: it opens a local web page in which you need to upload a file with a list of IDs. Then specify the name of the column containing IDs (and longitude and latitude if present). Once processed, select one or several samples, and click "Select coordinate" at the end of the list. Then select a point on the map (first zoom to a satisfying level): you should see the coordinates being updated in the list. When finished, click "Export Coordinates" to export the new csv file. In the data presented in this vignette, samples are already georeferenced. However, if you want to try this function : 
+
+```{r, eval=FALSE}
+#Load help
+#================
+?setLocation
+
+#Run setLocation
+#================
+setLocation()
+#Once the browser opens, you can load the file uganda-subset-id.csv that you copied in your current directory
+```
+
+### Create the environmental dataset
+
+Then from the point locations, you need to create your environmental dataset from point location. Use `createEnv` for this task.  
+
+You can use rasters of your study site that you already have or use the function to automatically download rasters of your study site from global databases. 
+```{r, eval=FALSE}
+#Load help
+#================
+?createEnv
+
+#Create environmental dataset
+#================
+#downloads the raster tiles from global databases and create the environmental file
+#Warning: the download and processing of raster is both heavy in space and time-consuming
+#If you want to save time, you can skip this step continue to the next function
+createEnv(locationFileName=locationFile, outputFile='uganda-subset-env.csv', x='longitude',y='latitude',locationProj=4326,separator=';', worldclim=TRUE, saveDownload=TRUE, rasterName=NULL,rasterProj=NULL, interactiveChecks=FALSE) #Also try with interactiveChecks=TRUE
+```
+
+### Prepare the final environmental dataset
+
+You can now use the `prepareEnv` function. This function has 3 goals
+
+* Put the sample ID of the genomic file and the environmental file in the same order (required to run sambada)  
+* Reduce your environmental dataset. Indeed, if you use worlclim variables for example, some of the variables will be very correlated. Correlated variables above a given threshold can be removed (argument `maxCorr`)  
+* Check if there is a population structure to include it as an "environmental variable" in your environmental file. This is done if you set numPc between 0 and 1: in this case, a PCA on genomic data will be run and the program will try to find a leak in the proportion of variances of the first principal components, determining the number of population variable to include in the analysis.
+
+The function creates a new file with the name specified in outputFile.
+
+```{r, eval=FALSE}
+#Load help
+#================
+?prepareEnv
+
+#prepareEnv
+#================
+
+#Remove variables correlated at >0.8,calculates and stores Principal components scores
+prepareEnv(envFile=envFile, outputFile='uganda-subset-env-export.csv', maxCorr=0.8, idName='short_name', genoFile=gdsFile, numPc=0.2, mafThresh=0.05, missingnessThresh=0.1, ldThresh=0.2, numPop=NULL, x='longitude', y='latitude', interactiveChecks=FALSE, locationProj=4326 )
+#Also try with interactiveChecks=TRUE
+```
+
+## Section 4: Run SamBada
+
+If you run samBada from the command line, you will have to create a parameter file. All parameters that can be calculated automatically from your file are calculated for you in `sambadaParallel`. Furthermore, samBada includes a module called supervision to split the molecular file into several subfiles to allow parallel computing. 
+
+
+```{r, eval=FALSE}
+#Load help
+#================
+?sambadaParallel
+
+#sambadaParallel
+#================
+#Run sambada on two cores. 
+#Make sure you ran downloadSambada() before running this command.
+#Only one pop var was saved, so set dimMax=2. prepareEnv puts the population variables at the end of the file (=> LAST). 
+sambadaParallel(genoFile=genoFile2, envFile=envFile2, idGeno='ID_indiv', idEnv='short_name', dimMax=2, cores=2, saveType='END ALL', populationVar='LAST', outputFile='uganda-subset-mol')
+
+```
+
+## Section 5: Post-processing
+
+### Prepare the output
+
+The function `prepareOutput` does the following things on sambada's output
+
+* Calculate p and q-value
+* Retrieves the chromosome and position of each SNP in the output from the GDS file
+* Filter out models that are not interesting (if you ran a multivariate model with population structure)
+* It also computes the maximum position in each chromosome to ease the plotting of manhattan plot.
+
+```{r, eval=FALSE}
+#Load help
+#================
+?prepareOutput
+
+#prepareOutput
+#================
+prep = prepareOutput(sambadaname='uganda-subset-mol', dimMax=2, popStr=TRUE, interactiveChecks=FALSE)
+#Also try with interactiveChecks=TRUE
+
+```
+### Manhattan plots
+
+To explore your results, the first thing you could do is draw a manhattan plot of each environmental variable to detect one or several interesting peaks in particular variables
+
+```{r, eval=FALSE}
+#Load help
+#================
+?plotManhattan
+
+#plotManhattan
+#================
+#Plot manhattan of all kept variables
+plotManhattan(prep,'bio1',chromo='all',valueName='pvalueG') #can also put a vector of environmental variable such as c('bio1','bio2','bio3')
+#Warning: the manhattan plot is different from what we are used to see, given the small number of SNPs
+
+```
+
+
+### Plot the results interactively
+
+The function `plotResultInteractive` can now be invoked. This will open a local page on your web-browser with a manhattan plot (you have to choose the environmental variable you want to study and can choose the chromosomes to draw). 
+
+The plot is interactive so that you can select a point on the manhattan which will query the [Ensembl database](http://www.ensembl.org/index.html) to indicate nearby SNPs and the consequence of the variant (intergenic, synonymous, non-synonymous, stop gained, stop lost,...) with [VEP](www.ensembl.org/info/docs/tools/vep/index.html). 
+
+The map of the marker, population variables and environmental variable is available. 
+
+A boxplot showing the environmental range of both present and absent individuals is drawn as well.
+
+```{r, eval=FALSE}
+#Load help
+#================
+?plotResultInteractive
+
+#plotResultInteractive
+#================
+
+plotResultInteractive(preparedOutput=prep, varEnv='bio1', envFile=envFile2,species='btaurus', pass=50000,x='longitude',y='latitude',gdsFile=gdsFile, IDCol='short_name', popStrCol='pop1')
+#Accepts the Dataset and SNP Data found
+#Once the interactive window opens, click on any point of the manhattan plot
+```
+
+### Plot maps
+
+You might be interested in plotting a map (though it is already done in the `plotResultInteractive`). The advantages of the `plotMap` are
+
+* Use of raster as background if available
+* Closely located points are scattered so that all points are visible (or should be!)
+
+You can draw a map of
+
+* marker distribution (presence/absence)
+* population structure (either as pie charts if membership coefficient or as a continuous variable)
+* envrionmental variable (if no raster available)
+* Auto-correlation of marker
+
+```{r, eval=FALSE}
+#Load help
+#================
+?plotMap
+
+#plotMap
+#================
+
+plotMap(envFile=envFile2, x='longitude', y='latitude', locationProj=4326,  popStrCol='pop1', gdsFile=gdsFile, markerName='Hapmap28985-BTA-73836_GG', mapType='marker', varEnvName='bio1', simultaneous=FALSE)
+
+```
+
+# Conclusions
+
+## Summary of what we did
+
+In the pre-processing step, we formatted the input genetic files in csv as required by SamBada and ran quality controls. We downloaded environmental information at sample locations and calculated a population variable. Then we ran sambada. We prepared the output (calculate p and q-values) and visualised the results as a form of static manhattan plots, interactive manhattan plots and maps.
+
+## Comments on the SNP presents in the dataset
+
+The subset of SNP present in this vignette was not done randomly. Most of the SNPs are highlighted in "Stucki, S., Orozco-terWengel, P., Forester, B. R., Duruz, S., Colli, L., Masembe, C., ... & Bruford, M. W. (2017). High performance computation of landscape genomic models including local indicators of spatial association. Molecular ecology resources, 17(5), 1072-1089". 3 SNPs (BTA-73842-no-rs, ARS-BFGL-NGS-106520, Hapmap28985-BTA-73836) were found significant taking population structure into account. 4 SNPs (Hapmap41762-BTA-117570,BTA-122374-no-rs,Hapmap23956-BTA-36867,ARS-BFGL-NGS-46098) were found significant only when SamBada was run in univariate mode (without population variable). The two other SNPs (ARS-BFGL-NGS-44057,DPI-28) were not reported as significant.
+
+
+## What's next
+
+In fact, the plotResultInteractive function is a long step, in which we search for interesting genes located near significant SNPs. Once genes are found, assumptions can be made regarding the role of the SNP with regards to the environmental conditions in which it is found. 
+
+SamBada can also be used in combination with other methods such as LFMM or BayEnv and results can be compared.
+
+# Contributors
+
+- Solange Duruz (Author)
+- Sylvie Stucki (Author)
+- Oliver Selmoni (Author)
+- Elia vajana (Author)
+
+# Session Information
+
+This shows us useful information for reproducibility. Of particular importance
+are the versions of R and the packages used to create this workflow. It is
+considered good practice to record this information with every analysis.
+
+```{r, sessioninfo}
+options(width = 100)
+devtools::session_info()
+```
